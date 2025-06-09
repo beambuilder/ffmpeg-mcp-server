@@ -12,15 +12,33 @@ Designed for use with Claude Desktop to cut highlights from long livestreams int
 
 ## Requirements
 
+### Local Installation
+
 - [Node.js](https://nodejs.org/) (v18+)
-- [FFmpeg](https://ffmpeg.org/) and [ffprobe](https://ffmpeg.org/ffprobe.html) (install via Homebrew: `brew install ffmpeg`)
+- [FFmpeg](https://ffmpeg.org/) and [ffprobe](https://ffmpeg.org/ffprobe.html)
+
+### Docker Installation
+
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (FFmpeg is included in the container)
 
 ## Installation
 
+### Local Setup
+
 ```sh
+# Install FFmpeg (macOS)
 brew install ffmpeg
+
+# Install dependencies
 npm install
 chmod +x server.js
+```
+
+### Docker Setup
+
+```sh
+# No FFmpeg installation needed - it's included in the container
+npm install  # Only needed if you want to develop locally too
 ```
 
 ## Usage
