@@ -9,6 +9,7 @@ Designed for use with Claude Desktop to cut highlights from long livestreams int
 - **concatenate_videos**: Join multiple video segments together.
 - **get_video_info**: Get details about your video (duration, resolution, etc.).
 - **create_highlights_reel**: One-command solution to create a highlights reel from multiple segments.
+- **change_video_speed**: Change playback speed from 0.1x to 50x+ (audio removed for speeds > 1x).
 
 ## Requirements
 
@@ -63,6 +64,7 @@ The server communicates via stdio and is intended to be used as a backend for Cl
 - **concatenate_videos**: Concatenate multiple video files into one.
 - **get_video_info**: Get information about a video file (duration, resolution, etc.).
 - **create_highlights_reel**: Create a highlights reel from multiple timestamp segments.
+- **change_video_speed**: Change video playback speed (0.1x to 50x+). Audio is automatically removed for speeds > 1x.
 
 ## Claude Desktop Integration
 
