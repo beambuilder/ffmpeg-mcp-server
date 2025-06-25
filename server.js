@@ -363,7 +363,7 @@ class FFmpegMCPServer {
     }
   }
   }
-}
+
 
 // Start the server
 const transport = new StdioServerTransport();
