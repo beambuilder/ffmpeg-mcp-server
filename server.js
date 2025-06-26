@@ -4,7 +4,9 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
   CallToolRequestSchema,
+  ErrorCode,
   ListToolsRequestSchema,
+  McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import { exec } from 'child_process';
 import { promisify } from 'util';
@@ -17,8 +19,8 @@ class FFmpegMCPServer {
   constructor() {
     this.server = new Server(
       {
-        name: 'ffmpeg-video-editor',
-        version: '0.1.0',
+        name: 'ffmpeg-mcp-server',
+        version: '1.0.0',
       },
       {
         capabilities: {
@@ -28,18 +30,12 @@ class FFmpegMCPServer {
     );
 
     this.setupToolHandlers();
-    
-    // Error handling
-    this.server.onerror = (error) => console.error('[MCP Error]', error);
-    process.on('SIGINT', async () => {
-      await this.server.close();
-      process.exit(0);
-    });
   }
 
   setupToolHandlers() {
-    this.server.setRequestHandler(ListToolsRequestSchema, async () => ({
-      tools: [
+    this.server.setRequestHandler(ListToolsRequestSchema, async () => {
+      return {
+        tools: [
         {
           name: 'extract_video_segment',
           description: 'Extract a segment from a video file using start and end timestamps',
@@ -131,7 +127,7 @@ class FFmpegMCPServer {
         },
         {
           name: 'change_video_speed',
-          description: 'Change the playback speed of a video (1x to 50x+). Audio is removed for speeds > 1x',
+          description: 'Change the playback speed of a video (1.0 = normal, 2.0 = 2x faster, 0.5 = half speed)',
           inputSchema: {
             type: 'object',
             properties: {
@@ -145,49 +141,51 @@ class FFmpegMCPServer {
               },
               speed: {
                 type: 'number',
-                description: 'Speed multiplier (e.g., 2.0 for 2x speed, 0.5 for half speed, 50 for 50x speed)',
                 minimum: 0.1,
-                maximum: 100
+                maximum: 100,
+                description: 'Speed multiplier (e.g., 2.0 = 2x speed, 0.5 = half speed, 50 = 50x speed)'
               }
             },
             required: ['input_file', 'output_file', 'speed']
           }
         }
-      ]
-    }));
+        ]
+      };
+    });
 
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
 
       try {
         switch (name) {
-          case 'extract_video_segment':
+          case "extract_video_segment":
             return await this.extractVideoSegment(args);
-          case 'concatenate_videos':
+          case "concatenate_videos":
             return await this.concatenateVideos(args);
-          case 'get_video_info':
+          case "get_video_info":
             return await this.getVideoInfo(args);
-          case 'create_highlights_reel':
+          case "create_highlights_reel":
             return await this.createHighlightsReel(args);
-          case 'change_video_speed':
+          case "change_video_speed":
             return await this.changeVideoSpeed(args);
           default:
-            throw new Error(`Unknown tool: ${name}`);
+            throw new McpError(
+              ErrorCode.MethodNotFound,
+              `Unknown tool: ${name}`
+            );
         }
       } catch (error) {
-        return {
-          content: [
-            {
-              type: 'text',
-              text: `Error: ${error.message}`
-            }
-          ]
-        };
+        throw new McpError(
+          ErrorCode.InternalError,
+          `Tool execution failed: ${error.message}`
+        );
       }
     });
   }
 
-  async extractVideoSegment({ input_file, output_file, start_time, end_time }) {
+  async extractVideoSegment(args) {
+    const { input_file, output_file, start_time, end_time } = args;
+    
     const command = `ffmpeg -i "${input_file}" -ss ${start_time} -to ${end_time} -c copy "${output_file}"`;
     
     try {
@@ -195,18 +193,20 @@ class FFmpegMCPServer {
       return {
         content: [
           {
-            type: 'text',
-            text: `Successfully extracted segment from ${start_time} to ${end_time}\nOutput: ${output_file}\n\nFFmpeg output: ${stderr}`
+            type: "text",
+            text: `Successfully extracted video segment from ${start_time} to ${end_time}. Output saved to: ${output_file}`
           }
         ]
       };
     } catch (error) {
-      throw new Error(`Failed to extract video segment: ${error.message}`);
+      throw new Error(`FFmpeg extraction failed: ${error.message}`);
     }
   }
 
-  async concatenateVideos({ input_files, output_file }) {
-    // Create a temporary file list for FFmpeg concat
+  async concatenateVideos(args) {
+    const { input_files, output_file } = args;
+    
+    // Create a temporary file list for FFmpeg
     const listFile = 'temp_concat_list.txt';
     const fileList = input_files.map(file => `file '${file}'`).join('\n');
     
@@ -216,86 +216,88 @@ class FFmpegMCPServer {
       const command = `ffmpeg -f concat -safe 0 -i "${listFile}" -c copy "${output_file}"`;
       const { stdout, stderr } = await execAsync(command);
       
-      // Clean up temp file
+      // Clean up temporary file
       await fs.unlink(listFile);
       
       return {
         content: [
           {
-            type: 'text',
-            text: `Successfully concatenated ${input_files.length} videos\nOutput: ${output_file}\n\nFFmpeg output: ${stderr}`
+            type: "text",
+            text: `Successfully concatenated ${input_files.length} videos. Output saved to: ${output_file}`
           }
         ]
       };
     } catch (error) {
-      // Clean up temp file in case of error
+      // Clean up temporary file on error
       try {
         await fs.unlink(listFile);
-      } catch {}
-      throw new Error(`Failed to concatenate videos: ${error.message}`);
+      } catch (unlinkError) {
+        // Ignore unlink errors
+      }
+      throw new Error(`FFmpeg concatenation failed: ${error.message}`);
     }
   }
 
-  async getVideoInfo({ input_file }) {
+  async getVideoInfo(args) {
+    const { input_file } = args;
+    
     const command = `ffprobe -v quiet -print_format json -show_format -show_streams "${input_file}"`;
     
     try {
-      const { stdout } = await execAsync(command);
+      const { stdout, stderr } = await execAsync(command);
       const info = JSON.parse(stdout);
       
-      const videoStream = info.streams.find(s => s.codec_type === 'video');
-      const audioStream = info.streams.find(s => s.codec_type === 'audio');
+      // Extract useful information
+      const videoStream = info.streams.find(stream => stream.codec_type === 'video');
+      const audioStream = info.streams.find(stream => stream.codec_type === 'audio');
       
-      const duration = parseFloat(info.format.duration);
-      const hours = Math.floor(duration / 3600);
-      const minutes = Math.floor((duration % 3600) / 60);
-      const seconds = Math.floor(duration % 60);
-      
-      const summary = {
-        file: input_file,
-        duration: `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')} (${duration}s)`,
-        size: `${Math.round(parseInt(info.format.size) / 1024 / 1024)} MB`,
+      const result = {
+        duration: parseFloat(info.format.duration),
+        file_size: parseInt(info.format.size),
+        format: info.format.format_name,
         video: videoStream ? {
           codec: videoStream.codec_name,
-          resolution: `${videoStream.width}x${videoStream.height}`,
-          fps: eval(videoStream.r_frame_rate),
-          bitrate: videoStream.bit_rate ? `${Math.round(parseInt(videoStream.bit_rate) / 1000)} kbps` : 'N/A'
-        } : 'No video stream',
+          width: videoStream.width,
+          height: videoStream.height,
+          fps: eval(videoStream.r_frame_rate) // Convert fraction to decimal
+        } : null,
         audio: audioStream ? {
           codec: audioStream.codec_name,
-          channels: audioStream.channels,
-          sample_rate: `${audioStream.sample_rate} Hz`,
-          bitrate: audioStream.bit_rate ? `${Math.round(parseInt(audioStream.bit_rate) / 1000)} kbps` : 'N/A'
-        } : 'No audio stream'
+          sample_rate: audioStream.sample_rate,
+          channels: audioStream.channels
+        } : null
       };
       
       return {
         content: [
           {
-            type: 'text',
-            text: `Video Information:\n${JSON.stringify(summary, null, 2)}`
+            type: "text",
+            text: `Video Information:\n${JSON.stringify(result, null, 2)}`
           }
         ]
       };
     } catch (error) {
-      throw new Error(`Failed to get video info: ${error.message}`);
+      throw new Error(`FFprobe failed: ${error.message}`);
     }
   }
 
-  async createHighlightsReel({ input_file, segments, output_file }) {
+  async createHighlightsReel(args) {
+    const { input_file, output_file, segments } = args;
+    
+    // Extract each segment first
     const tempFiles = [];
     
     try {
-      // Extract each segment to temporary files
       for (let i = 0; i < segments.length; i++) {
+        const segment = segments[i];
         const tempFile = `temp_segment_${i}.mp4`;
         tempFiles.push(tempFile);
         
         await this.extractVideoSegment({
           input_file,
           output_file: tempFile,
-          start_time: segments[i].start_time,
-          end_time: segments[i].end_time
+          start_time: segment.start_time,
+          end_time: segment.end_time
         });
       }
       
@@ -307,65 +309,76 @@ class FFmpegMCPServer {
       
       // Clean up temporary files
       for (const tempFile of tempFiles) {
-        await fs.unlink(tempFile);
+        try {
+          await fs.unlink(tempFile);
+        } catch (unlinkError) {
+          // Ignore unlink errors
+        }
       }
       
       return {
         content: [
           {
-            type: 'text',
-            text: `Successfully created highlights reel with ${segments.length} segments\nOutput: ${output_file}`
+            type: "text",
+            text: `Successfully created highlights reel with ${segments.length} segments. Output saved to: ${output_file}`
           }
         ]
       };
     } catch (error) {
-      // Clean up temp files in case of error
+      // Clean up temporary files on error
       for (const tempFile of tempFiles) {
         try {
           await fs.unlink(tempFile);
-        } catch {}
+        } catch (unlinkError) {
+          // Ignore unlink errors
+        }
       }
-      throw new Error(`Failed to create highlights reel: ${error.message}`);
+      throw new Error(`Highlights reel creation failed: ${error.message}`);
     }
   }
 
-  async changeVideoSpeed({ input_file, output_file, speed }) {
-    // For speeds > 1x, remove audio using -an flag
-    // For speeds <= 1x, keep audio but adjust it accordingly
-    let command;
+  async changeVideoSpeed(args) {
+    const { input_file, output_file, speed } = args;
     
+    // Calculate the PTS value for FFmpeg (inverse of speed)
+    const ptsValue = 1 / speed;
+    
+    let command;
     if (speed > 1) {
-      // Speed up video, remove audio
-      command = `ffmpeg -i "${input_file}" -filter:v "setpts=PTS/${speed}" -an "${output_file}"`;
+      // Speed up: remove audio with -an flag
+      command = `ffmpeg -i "${input_file}" -filter:v "setpts=${ptsValue}*PTS" -an "${output_file}"`;
     } else {
-      // Slow down video, keep audio and adjust it
-      const audioPts = 1 / speed;
-      command = `ffmpeg -i "${input_file}" -filter:v "setpts=PTS/${speed}" -filter:a "atempo=${speed}" "${output_file}"`;
+      // Slow down or normal speed: preserve and adjust audio
+      const audioSpeed = speed;
+      command = `ffmpeg -i "${input_file}" -filter:v "setpts=${ptsValue}*PTS" -filter:a "atempo=${audioSpeed}" "${output_file}"`;
     }
     
     try {
       const { stdout, stderr } = await execAsync(command);
       
       const speedDescription = speed > 1 
-        ? `${speed}x faster (audio removed)` 
+        ? `${speed}x speed (audio removed)` 
         : `${speed}x speed (audio preserved)`;
-      
+        
       return {
         content: [
           {
-            type: 'text',
-            text: `Successfully changed video speed to ${speedDescription}\nOutput: ${output_file}\n\nFFmpeg output: ${stderr}`
+            type: "text",
+            text: `Successfully changed video speed to ${speedDescription}. Output saved to: ${output_file}`
           }
         ]
       };
     } catch (error) {
-      throw new Error(`Failed to change video speed: ${error.message}`);
+      throw new Error(`FFmpeg speed change failed: ${error.message}`);
     }
   }
+
+  async run() {
+    const transport = new StdioServerTransport();
+    await this.server.connect(transport);
+    console.error("FFmpeg MCP server running on stdio");
   }
+}
 
-
-// Start the server
-const transport = new StdioServerTransport();
 const server = new FFmpegMCPServer();
-server.server.listen(transport);
+server.run().catch(console.error);
