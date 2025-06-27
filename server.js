@@ -82,15 +82,17 @@ class FFmpegMCPServer {
         );
       }
     });
-  }
-  async speedUpVideo(args) {
+  }  async speedUpVideo(args) {
     const { filename, speed_factor, output_suffix } = args;
     
-    // You'll need to configure this path to match your Claude config folder
-    // For now, using current directory. You can modify this to read from environment variable
-    const baseFolder = process.env.VIDEO_FOLDER || '.';
+    // Read the video folder path from environment variable set in Claude config
+    const baseFolder = process.env.VIDEOS_PATH || process.env.VIDEO_FOLDER || '.';
+    
+    console.error(`Base folder: ${baseFolder}`);
+    console.error(`Looking for file: ${filename}`);
     
     const inputPath = path.join(baseFolder, filename);
+    console.error(`Full input path: ${inputPath}`);
     
     // Create output filename with suffix
     const fileExt = path.extname(filename);
