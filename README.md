@@ -1,21 +1,18 @@
 # ffmpeg-mcp-server
 
-A Model Context Protocol (MCP) server for automated video editing with FFmpeg.  
-Designed for use with Claude Desktop to cut highlights from long livestreams into concise highlight reels.
+A Model Context Protocol (MCP) server for speeding up videos with FFmpeg.  
+Designed for use with Claude Desktop to quickly speed up MP4 videos.
 
 ## Features
 
-- **extract_video_segment**: Cut specific segments from your video.
-- **concatenate_videos**: Join multiple video segments together.
-- **get_video_info**: Get details about your video (duration, resolution, etc.).
-- **create_highlights_reel**: One-command solution to create a highlights reel from multiple segments.
+- **speed_up_video**: Speed up any video file by a specified factor (e.g., 50x faster)
 
 ## Requirements
 
 ### Local Installation
 
 - [Node.js](https://nodejs.org/) (v18+)
-- [FFmpeg](https://ffmpeg.org/) and [ffprobe](https://ffmpeg.org/ffprobe.html)
+- [FFmpeg](https://ffmpeg.org/)
 
 ### Docker Installation
 
@@ -26,12 +23,11 @@ Designed for use with Claude Desktop to cut highlights from long livestreams int
 ### Local Setup
 
 ```sh
-# Install FFmpeg (macOS)
-brew install ffmpeg
+# Install FFmpeg (Windows - via chocolatey)
+choco install ffmpeg
 
 # Install dependencies
 npm install
-chmod +x server.js
 ```
 
 ### Docker Setup
@@ -41,12 +37,35 @@ chmod +x server.js
 npm install  # Only needed if you want to develop locally too
 ```
 
+## Configuration
+
+To configure the folder where your video files are located, set the `VIDEO_FOLDER` environment variable in your Claude Desktop configuration.
+
+Example Claude Desktop config (modify the path to your video folder):
+```json
+{
+  "mcpServers": {
+    "ffmpeg-mcp-server": {
+      "command": "node",
+      "args": ["C:\\Users\\Niclas\\Desktop\\ffmpeg-mcp-server\\server.js"],
+      "env": {
+        "VIDEO_FOLDER": "D:\\testffmpegmcp"
+      }
+    }
+  }
+}
+```
+
 ## Usage
 
-Start the MCP server:
+The server will automatically start when Claude Desktop loads. You can then use the `speed_up_video` function by providing:
+- `filename`: The name of the video file (e.g., "GX010412.MP4")
+- `speed_factor`: How much to speed up (e.g., 50 for 50x speed)
+- `output_suffix` (optional): Custom suffix for output file (defaults to "x{speed_factor}")
 
-```sh
-./server.js
+Example command structure that gets executed:
+```
+ffmpeg -i "D:\testffmpegmcp\GX010412.MP4" -filter:v "setpts=0.02*PTS" -r 30 -an -c:v mpeg4 -q:v 5 "D:\testffmpegmcp\GX010412x50.MP4"
 ```
 
 or
