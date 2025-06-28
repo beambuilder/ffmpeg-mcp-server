@@ -32,8 +32,7 @@ class FFmpegMCPServer {
     this.setupToolHandlers();
   }
 
-  setupToolHandlers() {    this.server.setRequestHandler(ListToolsRequestSchema, async () => {      return {
-        tools: [
+  setupToolHandlers() {    this.server.setRequestHandler(ListToolsRequestSchema, async () => {      return {        tools: [
           {
             name: 'speed_up_video',
             description: 'Speed up a video by a given factor (e.g., 50 = 50x faster). Removes audio and outputs high-quality MP4.',
@@ -67,16 +66,36 @@ class FFmpegMCPServer {
               properties: {},
               required: []
             }
+          },
+          {
+            name: 'concatenate_videos',
+            description: 'Concatenate multiple video files into one output video. Creates temporary text file, processes videos, and cleans up automatically.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                video_files: {
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'Array of video filenames to concatenate in order (e.g., ["GX010410x50.MP4", "GX010419x50.MP4"])'
+                },
+                output_filename: {
+                  type: 'string',
+                  description: 'Name for the output concatenated video file (e.g., "concatenated_output.mp4")'
+                }
+              },
+              required: ['video_files', 'output_filename']
+            }
           }
         ]
       };
     });    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
-      const { name, arguments: args } = request.params;      try {
-        switch (name) {
+      const { name, arguments: args } = request.params;      try {        switch (name) {
           case "speed_up_video":
             return await this.speedUpVideo(args);
           case "get_files_info":
             return await this.getFilesInfo(args);
+          case "concatenate_videos":
+            return await this.concatenateVideos(args);
           default:
             throw new McpError(
               ErrorCode.MethodNotFound,
@@ -201,6 +220,74 @@ class FFmpegMCPServer {
     const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+  }
+
+  async concatenateVideos(args) {
+    const { video_files, output_filename } = args;
+    
+    // Read the video folder path from environment variable set in Claude config
+    const baseFolder = process.env.VIDEOS_PATH || process.env.VIDEO_FOLDER || '.';
+    
+    console.error(`Concatenating videos in folder: ${baseFolder}`);
+    console.error(`Input videos: ${video_files.join(', ')}`);
+    console.error(`Output filename: ${output_filename}`);
+      // Generate temporary filename for the concat list
+    const tempListFile = `concat_list.txt`;
+    const tempListPath = path.join(baseFolder, tempListFile);
+    const outputPath = path.join(baseFolder, output_filename);
+    
+    try {
+      // Verify all input files exist
+      for (const filename of video_files) {
+        const inputPath = path.join(baseFolder, filename);
+        try {
+          await fs.access(inputPath);
+        } catch (error) {
+          throw new Error(`Input video file not found: ${inputPath}`);
+        }
+      }
+      
+      // Create the concat list file content
+      const listContent = video_files.map(filename => `file '${filename}'`).join('\n');
+      
+      console.error(`Creating temporary list file: ${tempListPath}`);
+      console.error(`List content:\n${listContent}`);
+      
+      // Write the temporary list file
+      await fs.writeFile(tempListPath, listContent, 'utf8');
+        // Build the FFmpeg command using your exact structure
+      const command = `ffmpeg -f concat -safe 0 -i ${tempListFile} -c copy ${output_filename}`;
+      
+      console.error(`Executing: ${command}`);
+      console.error(`Working directory: ${baseFolder}`);
+      
+      // Execute FFmpeg command in the video folder directory
+      const { stdout, stderr } = await execAsync(command, { cwd: baseFolder });
+      
+      // Clean up the temporary list file
+      console.error(`Cleaning up temporary file: ${tempListPath}`);
+      await fs.unlink(tempListPath);
+      
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Successfully concatenated ${video_files.length} videos.\nInput videos: ${video_files.join(', ')}\nOutput: ${outputPath}\nTemporary list file cleaned up.`
+          }
+        ]
+      };
+    } catch (error) {
+      // Clean up temporary file on error (if it exists)
+      try {
+        await fs.unlink(tempListPath);
+        console.error(`Cleaned up temporary file after error: ${tempListPath}`);
+      } catch (unlinkError) {
+        // Ignore cleanup errors
+        console.error(`Could not clean up temporary file: ${tempListPath}`);
+      }
+      
+      throw new Error(`FFmpeg concatenation failed: ${error.message}\nCommand: ffmpeg -f concat -safe 0 -i "${tempListFile}" -c copy "${output_filename}"`);
+    }
   }
 
   async run() {
