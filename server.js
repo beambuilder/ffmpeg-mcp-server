@@ -29,13 +29,15 @@ class FFmpegMCPServer {
       }
     );
 
+    // Track background processing operations
+    this.processingQueue = new Map();
     this.setupToolHandlers();
   }
 
   setupToolHandlers() {    this.server.setRequestHandler(ListToolsRequestSchema, async () => {      return {        tools: [
           {
             name: 'speed_up_video',
-            description: 'Speed up a video by a given factor (e.g., 50 = 50x faster). Removes audio and outputs high-quality MP4.',
+            description: 'Speed up a video by a given factor (e.g., 50 = 50x faster). For large files, processing starts in background.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -56,6 +58,15 @@ class FFmpegMCPServer {
                 }
               },
               required: ['filename', 'speed_factor']
+            }
+          },
+          {
+            name: 'check_processing_status',
+            description: 'Check the status of background video processing operations.',
+            inputSchema: {
+              type: 'object',
+              properties: {},
+              required: []
             }
           },
           {
@@ -92,6 +103,8 @@ class FFmpegMCPServer {
       const { name, arguments: args } = request.params;      try {        switch (name) {
           case "speed_up_video":
             return await this.speedUpVideo(args);
+          case "check_processing_status":
+            return await this.checkProcessingStatus(args);
           case "get_files_info":
             return await this.getFilesInfo(args);
           case "concatenate_videos":
@@ -128,12 +141,16 @@ class FFmpegMCPServer {
     const outputFilename = `${baseName}${suffix}${fileExt}`;
     const outputPath = path.join(baseFolder, outputFilename);
     
-    // Check if input file exists
+    // Check if input file exists and get file size
+    let fileStats;
     try {
-      await fs.access(inputPath);
+      fileStats = await fs.stat(inputPath);
     } catch (error) {
       throw new Error(`Input file not found: ${inputPath}`);
     }
+    
+    const fileSizeGB = fileStats.size / (1024 * 1024 * 1024);
+    const isLargeFile = fileSizeGB > 1; // Consider files > 1GB as large
     
     // Calculate PTS value (inverse of speed factor)
     const ptsValue = (1 / speed_factor).toFixed(4);
@@ -141,20 +158,51 @@ class FFmpegMCPServer {
     // Build the exact command structure you provided
     const command = `ffmpeg -i "${inputPath}" -filter:v "setpts=${ptsValue}*PTS" -r 30 -an -c:v mpeg4 -q:v 5 "${outputPath}"`;
     
-    try {
-      console.error(`Executing: ${command}`);
-      const { stdout, stderr } = await execAsync(command);
+    if (isLargeFile) {
+      // For large files, start background processing
+      const jobId = `${baseName}_${Date.now()}`;
+      
+      console.error(`Large file detected (${fileSizeGB.toFixed(2)}GB). Starting background processing with job ID: ${jobId}`);
+      
+      // Store job info
+      this.processingQueue.set(jobId, {
+        status: 'processing',
+        inputFile: filename,
+        outputFile: outputFilename,
+        startTime: new Date(),
+        command: command,
+        fileSize: fileSizeGB
+      });
+      
+      // Start background process
+      this.startBackgroundProcessing(jobId, command, inputPath, outputPath);
       
       return {
         content: [
           {
             type: "text",
-            text: `Successfully sped up video by ${speed_factor}x.\nInput: ${inputPath}\nOutput: ${outputPath}\nPTS value used: ${ptsValue}`
+            text: `Large file detected (${fileSizeGB.toFixed(2)}GB). Started background processing.\nJob ID: ${jobId}\nInput: ${inputPath}\nOutput: ${outputPath}\nEstimated time: ${this.estimateProcessingTime(fileSizeGB, speed_factor)}\n\nUse 'check_processing_status' to monitor progress.`
           }
         ]
       };
-    } catch (error) {
-      throw new Error(`FFmpeg speed-up failed: ${error.message}\nCommand: ${command}`);
+    } else {
+      // For smaller files, process normally (synchronously)
+      try {
+        console.error(`Processing small file (${fileSizeGB.toFixed(2)}GB) synchronously`);
+        console.error(`Executing: ${command}`);
+        const { stdout, stderr } = await execAsync(command);
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Successfully sped up video by ${speed_factor}x.\nInput: ${inputPath}\nOutput: ${outputPath}\nFile size: ${fileSizeGB.toFixed(2)}GB\nPTS value used: ${ptsValue}`
+            }
+          ]
+        };
+      } catch (error) {
+        throw new Error(`FFmpeg speed-up failed: ${error.message}\nCommand: ${command}`);
+      }
     }
   }
 
@@ -287,6 +335,120 @@ class FFmpegMCPServer {
       }
       
       throw new Error(`FFmpeg concatenation failed: ${error.message}\nCommand: ffmpeg -f concat -safe 0 -i "${tempListFile}" -c copy "${output_filename}"`);
+    }
+  }
+
+  startBackgroundProcessing(jobId, command, inputPath, outputPath) {
+    console.error(`Starting background job ${jobId}: ${command}`);
+    
+    const child = exec(command, (error, stdout, stderr) => {
+      const job = this.processingQueue.get(jobId);
+      if (!job) return;
+      
+      if (error) {
+        console.error(`Background job ${jobId} failed: ${error.message}`);
+        job.status = 'failed';
+        job.error = error.message;
+        job.endTime = new Date();
+      } else {
+        console.error(`Background job ${jobId} completed successfully`);
+        job.status = 'completed';
+        job.endTime = new Date();
+      }
+    });
+    
+    // Store the child process reference
+    const job = this.processingQueue.get(jobId);
+    if (job) {
+      job.process = child;
+    }
+  }
+
+  async checkProcessingStatus(args) {
+    const jobs = Array.from(this.processingQueue.entries()).map(([jobId, job]) => {
+      const duration = job.endTime 
+        ? (job.endTime - job.startTime) / 1000 
+        : (new Date() - job.startTime) / 1000;
+      
+      return {
+        jobId,
+        status: job.status,
+        inputFile: job.inputFile,
+        outputFile: job.outputFile,
+        fileSize: `${job.fileSize.toFixed(2)}GB`,
+        duration: `${Math.floor(duration)}s`,
+        startTime: job.startTime.toLocaleString(),
+        endTime: job.endTime ? job.endTime.toLocaleString() : null,
+        error: job.error || null
+      };
+    });
+    
+    // Clean up completed/failed jobs older than 1 hour
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    for (const [jobId, job] of this.processingQueue.entries()) {
+      if ((job.status === 'completed' || job.status === 'failed') && 
+          job.endTime && job.endTime < oneHourAgo) {
+        this.processingQueue.delete(jobId);
+      }
+    }
+    
+    const activeJobs = jobs.filter(job => job.status === 'processing');
+    const completedJobs = jobs.filter(job => job.status === 'completed');
+    const failedJobs = jobs.filter(job => job.status === 'failed');
+    
+    let statusText = `Processing Status Summary:\n\n`;
+    statusText += `Active jobs: ${activeJobs.length}\n`;
+    statusText += `Completed jobs: ${completedJobs.length}\n`;
+    statusText += `Failed jobs: ${failedJobs.length}\n\n`;
+    
+    if (activeJobs.length > 0) {
+      statusText += `ACTIVE JOBS:\n`;
+      activeJobs.forEach(job => {
+        statusText += `• ${job.jobId}: ${job.inputFile} (${job.fileSize}) - Running for ${job.duration}\n`;
+      });
+      statusText += `\n`;
+    }
+    
+    if (completedJobs.length > 0) {
+      statusText += `RECENTLY COMPLETED:\n`;
+      completedJobs.slice(-3).forEach(job => {
+        statusText += `• ${job.outputFile} - Completed in ${job.duration} (${job.endTime})\n`;
+      });
+      statusText += `\n`;
+    }
+    
+    if (failedJobs.length > 0) {
+      statusText += `FAILED JOBS:\n`;
+      failedJobs.slice(-3).forEach(job => {
+        statusText += `• ${job.inputFile} - Failed after ${job.duration}: ${job.error}\n`;
+      });
+    }
+    
+    if (jobs.length === 0) {
+      statusText += `No recent processing jobs found.`;
+    }
+    
+    return {
+      content: [
+        {
+          type: "text",
+          text: statusText
+        }
+      ]
+    };
+  }
+
+  estimateProcessingTime(fileSizeGB, speedFactor) {
+    // Rough estimation: ~2-5 minutes per GB for speed-up operations
+    const baseMinutesPerGB = 3;
+    const estimatedMinutes = fileSizeGB * baseMinutesPerGB;
+    
+    if (estimatedMinutes < 60) {
+      return `~${Math.ceil(estimatedMinutes)} minutes`;
+    } else {
+      const hours = Math.floor(estimatedMinutes / 60);
+      const minutes = Math.ceil(estimatedMinutes % 60);
+      return `~${hours}h ${minutes}m`;
     }
   }
 
