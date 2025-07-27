@@ -70,6 +70,31 @@ class FFmpegMCPServer {
             }
           },
           {
+            name: 'increase_keyframes',
+            description: 'Increase the number of keyframes in a video by setting GOP (Group of Pictures) value. Lower GOP = more keyframes.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                filename: {
+                  type: 'string',
+                  description: 'Name of the video file (e.g., "input.mp4"). The file will be searched in the configured folder.'
+                },
+                gop_value: {
+                  type: 'number',
+                  minimum: 1,
+                  maximum: 300,
+                  description: 'GOP (Group of Pictures) value. 1 = keyframe every frame, 30 = keyframe every 30th frame'
+                },
+                output_suffix: {
+                  type: 'string',
+                  description: 'Optional suffix for output filename (defaults to "_gop{gop_value}")',
+                  default: ''
+                }
+              },
+              required: ['filename', 'gop_value']
+            }
+          },
+          {
             name: 'get_files_info',
             description: 'Get a list of all files in the configured video folder with their names and modification dates.',
             inputSchema: {
@@ -105,6 +130,8 @@ class FFmpegMCPServer {
             return await this.speedUpVideo(args);
           case "check_processing_status":
             return await this.checkProcessingStatus(args);
+          case "increase_keyframes":
+            return await this.increaseKeyframes(args);
           case "get_files_info":
             return await this.getFilesInfo(args);
           case "concatenate_videos":
@@ -335,6 +362,88 @@ class FFmpegMCPServer {
       }
       
       throw new Error(`FFmpeg concatenation failed: ${error.message}\nCommand: ffmpeg -f concat -safe 0 -i "${tempListFile}" -c copy "${output_filename}"`);
+    }
+  }
+
+  async increaseKeyframes(args) {
+    const { filename, gop_value, output_suffix } = args;
+    
+    // Read the video folder path from environment variable set in Claude config
+    const baseFolder = process.env.VIDEOS_PATH || process.env.VIDEO_FOLDER || '.';
+    
+    console.error(`Base folder: ${baseFolder}`);
+    console.error(`Looking for file: ${filename}`);
+    console.error(`GOP value: ${gop_value}`);
+    
+    const inputPath = path.join(baseFolder, filename);
+    console.error(`Full input path: ${inputPath}`);
+    
+    // Create output filename with suffix
+    const fileExt = path.extname(filename);
+    const baseName = path.basename(filename, fileExt);
+    const suffix = output_suffix || `_gop${gop_value}`;
+    const outputFilename = `${baseName}${suffix}${fileExt}`;
+    const outputPath = path.join(baseFolder, outputFilename);
+    
+    // Check if input file exists and get file size
+    let fileStats;
+    try {
+      fileStats = await fs.stat(inputPath);
+    } catch (error) {
+      throw new Error(`Input file not found: ${inputPath}`);
+    }
+    
+    const fileSizeGB = fileStats.size / (1024 * 1024 * 1024);
+    const isLargeFile = fileSizeGB > 1; // Consider files > 1GB as large
+    
+    // Build the exact command structure you provided
+    const command = `ffmpeg -i "${inputPath}" -c:v libx264 -g ${gop_value} -c:a copy "${outputPath}"`;
+    
+    if (isLargeFile) {
+      // For large files, start background processing
+      const jobId = `${baseName}_keyframes_${Date.now()}`;
+      
+      console.error(`Large file detected (${fileSizeGB.toFixed(2)}GB). Starting background processing with job ID: ${jobId}`);
+      
+      // Store job info
+      this.processingQueue.set(jobId, {
+        status: 'processing',
+        inputFile: filename,
+        outputFile: outputFilename,
+        startTime: new Date(),
+        command: command,
+        fileSize: fileSizeGB
+      });
+      
+      // Start background process
+      this.startBackgroundProcessing(jobId, command, inputPath, outputPath);
+      
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Large file detected (${fileSizeGB.toFixed(2)}GB). Started background keyframe processing.\nJob ID: ${jobId}\nInput: ${inputPath}\nOutput: ${outputPath}\nGOP value: ${gop_value} (keyframe every ${gop_value} frame${gop_value !== 1 ? 's' : ''})\nEstimated time: ${this.estimateProcessingTime(fileSizeGB, 1)}\n\nUse 'check_processing_status' to monitor progress.`
+          }
+        ]
+      };
+    } else {
+      // For smaller files, process normally (synchronously)
+      try {
+        console.error(`Processing small file (${fileSizeGB.toFixed(2)}GB) synchronously`);
+        console.error(`Executing: ${command}`);
+        const { stdout, stderr } = await execAsync(command);
+        
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Successfully increased keyframes in video.\nInput: ${inputPath}\nOutput: ${outputPath}\nFile size: ${fileSizeGB.toFixed(2)}GB\nGOP value: ${gop_value} (keyframe every ${gop_value} frame${gop_value !== 1 ? 's' : ''})`
+            }
+          ]
+        };
+      } catch (error) {
+        throw new Error(`FFmpeg keyframe processing failed: ${error.message}\nCommand: ${command}`);
+      }
     }
   }
 
