@@ -177,7 +177,6 @@ class FFmpegMCPServer {
     }
     
     const fileSizeGB = fileStats.size / (1024 * 1024 * 1024);
-    const isLargeFile = fileSizeGB > 1; // Consider files > 1GB as large
     
     // Calculate PTS value (inverse of speed factor)
     const ptsValue = (1 / speed_factor).toFixed(4);
@@ -185,52 +184,32 @@ class FFmpegMCPServer {
     // Build the exact command structure you provided
     const command = `ffmpeg -i "${inputPath}" -filter:v "setpts=${ptsValue}*PTS" -r 30 -an -c:v mpeg4 -q:v 5 "${outputPath}"`;
     
-    if (isLargeFile) {
-      // For large files, start background processing
-      const jobId = `${baseName}_${Date.now()}`;
-      
-      console.error(`Large file detected (${fileSizeGB.toFixed(2)}GB). Starting background processing with job ID: ${jobId}`);
-      
-      // Store job info
-      this.processingQueue.set(jobId, {
-        status: 'processing',
-        inputFile: filename,
-        outputFile: outputFilename,
-        startTime: new Date(),
-        command: command,
-        fileSize: fileSizeGB
-      });
-      
-      // Start background process
-      this.startBackgroundProcessing(jobId, command, inputPath, outputPath);
-      
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Large file detected (${fileSizeGB.toFixed(2)}GB). Started background processing.\nJob ID: ${jobId}\nInput: ${inputPath}\nOutput: ${outputPath}\nEstimated time: ${this.estimateProcessingTime(fileSizeGB, speed_factor)}\n\nUse 'check_processing_status' to monitor progress.`
-          }
-        ]
-      };
-    } else {
-      // For smaller files, process normally (synchronously)
-      try {
-        console.error(`Processing small file (${fileSizeGB.toFixed(2)}GB) synchronously`);
-        console.error(`Executing: ${command}`);
-        const { stdout, stderr } = await execAsync(command);
-        
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Successfully sped up video by ${speed_factor}x.\nInput: ${inputPath}\nOutput: ${outputPath}\nFile size: ${fileSizeGB.toFixed(2)}GB\nPTS value used: ${ptsValue}`
-            }
-          ]
-        };
-      } catch (error) {
-        throw new Error(`FFmpeg speed-up failed: ${error.message}\nCommand: ${command}`);
-      }
-    }
+    // Always use background processing to prevent Claude from staying in loading mode
+    const jobId = `${baseName}_${Date.now()}`;
+    
+    console.error(`Starting background processing for file (${fileSizeGB.toFixed(2)}GB) with job ID: ${jobId}`);
+    
+    // Store job info
+    this.processingQueue.set(jobId, {
+      status: 'processing',
+      inputFile: filename,
+      outputFile: outputFilename,
+      startTime: new Date(),
+      command: command,
+      fileSize: fileSizeGB
+    });
+    
+    // Start background process
+    this.startBackgroundProcessing(jobId, command, inputPath, outputPath);
+    
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Started processing video (${fileSizeGB.toFixed(2)}GB).\nJob ID: ${jobId}\nInput: ${inputPath}\nOutput: ${outputPath}\nSpeed: ${speed_factor}x (PTS: ${ptsValue})\nEstimated time: ${this.estimateProcessingTime(fileSizeGB, speed_factor)}\n\nProcessing in background. Use 'check_processing_status' to monitor progress.`
+        }
+      ]
+    };
   }
 
   async getFilesInfo(args) {
@@ -394,57 +373,36 @@ class FFmpegMCPServer {
     }
     
     const fileSizeGB = fileStats.size / (1024 * 1024 * 1024);
-    const isLargeFile = fileSizeGB > 1; // Consider files > 1GB as large
     
     // Build the exact command structure you provided
     const command = `ffmpeg -i "${inputPath}" -c:v libx264 -g ${gop_value} -c:a copy "${outputPath}"`;
     
-    if (isLargeFile) {
-      // For large files, start background processing
-      const jobId = `${baseName}_keyframes_${Date.now()}`;
-      
-      console.error(`Large file detected (${fileSizeGB.toFixed(2)}GB). Starting background processing with job ID: ${jobId}`);
-      
-      // Store job info
-      this.processingQueue.set(jobId, {
-        status: 'processing',
-        inputFile: filename,
-        outputFile: outputFilename,
-        startTime: new Date(),
-        command: command,
-        fileSize: fileSizeGB
-      });
-      
-      // Start background process
-      this.startBackgroundProcessing(jobId, command, inputPath, outputPath);
-      
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Large file detected (${fileSizeGB.toFixed(2)}GB). Started background keyframe processing.\nJob ID: ${jobId}\nInput: ${inputPath}\nOutput: ${outputPath}\nGOP value: ${gop_value} (keyframe every ${gop_value} frame${gop_value !== 1 ? 's' : ''})\nEstimated time: ${this.estimateProcessingTime(fileSizeGB, 1)}\n\nUse 'check_processing_status' to monitor progress.`
-          }
-        ]
-      };
-    } else {
-      // For smaller files, process normally (synchronously)
-      try {
-        console.error(`Processing small file (${fileSizeGB.toFixed(2)}GB) synchronously`);
-        console.error(`Executing: ${command}`);
-        const { stdout, stderr } = await execAsync(command);
-        
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Successfully increased keyframes in video.\nInput: ${inputPath}\nOutput: ${outputPath}\nFile size: ${fileSizeGB.toFixed(2)}GB\nGOP value: ${gop_value} (keyframe every ${gop_value} frame${gop_value !== 1 ? 's' : ''})`
-            }
-          ]
-        };
-      } catch (error) {
-        throw new Error(`FFmpeg keyframe processing failed: ${error.message}\nCommand: ${command}`);
-      }
-    }
+    // Always use background processing to prevent Claude from staying in loading mode
+    const jobId = `${baseName}_keyframes_${Date.now()}`;
+    
+    console.error(`Starting background keyframe processing for file (${fileSizeGB.toFixed(2)}GB) with job ID: ${jobId}`);
+    
+    // Store job info
+    this.processingQueue.set(jobId, {
+      status: 'processing',
+      inputFile: filename,
+      outputFile: outputFilename,
+      startTime: new Date(),
+      command: command,
+      fileSize: fileSizeGB
+    });
+    
+    // Start background process
+    this.startBackgroundProcessing(jobId, command, inputPath, outputPath);
+    
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Started keyframe processing (${fileSizeGB.toFixed(2)}GB).\nJob ID: ${jobId}\nInput: ${inputPath}\nOutput: ${outputPath}\nGOP value: ${gop_value} (keyframe every ${gop_value} frame${gop_value !== 1 ? 's' : ''})\nEstimated time: ${this.estimateProcessingTime(fileSizeGB, 1)}\n\nProcessing in background. Use 'check_processing_status' to monitor progress.`
+        }
+      ]
+    };
   }
 
   startBackgroundProcessing(jobId, command, inputPath, outputPath) {
